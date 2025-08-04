@@ -1,0 +1,110 @@
+# ==========================================================
+#  Edge AI Prototype: Recyclable Item Classification
+#  - Dataset: TrashNet or similar (images of recyclable items)
+#  - Model: MobileNetV2
+#  - Output: TensorFlow Lite model for Edge deployment
+# ==========================================================
+
+import tensorflow as tf
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+
+# ----------------------------------------------------------
+# 1️⃣ Setup dataset
+# ----------------------------------------------------------
+
+# Define paths (replace with your dataset path or upload in Colab)
+train_dir = "dataset/train"
+val_dir = "dataset/validation"
+
+# Image preprocessing
+IMG_SIZE = (224, 224)
+BATCH_SIZE = 32
+
+train_datagen = ImageDataGenerator(rescale=1./255,
+                                   rotation_range=20,
+                                   zoom_range=0.2,
+                                   horizontal_flip=True)
+val_datagen = ImageDataGenerator(rescale=1./255)
+
+train_data = train_datagen.flow_from_directory(train_dir,
+                                               target_size=IMG_SIZE,
+                                               batch_size=BATCH_SIZE,
+                                               class_mode='categorical')
+val_data = val_datagen.flow_from_directory(val_dir,
+                                           target_size=IMG_SIZE,
+                                           batch_size=BATCH_SIZE,
+                                           class_mode='categorical')
+
+# ----------------------------------------------------------
+# 2️⃣ Load pre-trained MobileNetV2 and fine-tune
+# ----------------------------------------------------------
+base_model = tf.keras.applications.MobileNetV2(input_shape=(224,224,3),
+                                               include_top=False,
+                                               weights='imagenet')
+base_model.trainable = False  # Freeze base layers
+
+model = tf.keras.Sequential([
+    base_model,
+    tf.keras.layers.GlobalAveragePooling2D(),
+    tf.keras.layers.Dense(128, activation='relu'),
+    tf.keras.layers.Dropout(0.3),
+    tf.keras.layers.Dense(train_data.num_classes, activation='softmax')
+])
+
+model.compile(optimizer='adam',
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+
+# ----------------------------------------------------------
+# 3️⃣ Train the model
+# ----------------------------------------------------------
+EPOCHS = 5
+history = model.fit(train_data,
+                    epochs=EPOCHS,
+                    validation_data=val_data)
+
+# Plot training results
+plt.plot(history.history['accuracy'], label='train_acc')
+plt.plot(history.history['val_accuracy'], label='val_acc')
+plt.legend()
+plt.title("Training Accuracy")
+plt.show()
+
+# ----------------------------------------------------------
+# 4️⃣ Save and convert model to TensorFlow Lite
+# ----------------------------------------------------------
+model.save("recyclable_classifier.h5")
+
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+tflite_model = converter.convert()
+
+with open("recyclable_classifier.tflite", "wb") as f:
+    f.write(tflite_model)
+
+print("✅ Model converted to TensorFlow Lite successfully!")
+
+# ----------------------------------------------------------
+# 5️⃣ Load TFLite model for testing (simulating edge deployment)
+# ----------------------------------------------------------
+interpreter = tf.lite.Interpreter(model_path="recyclable_classifier.tflite")
+interpreter.allocate_tensors()
+
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+# Test with one sample image
+sample_image_path = val_dir + '/' + list(os.listdir(val_dir))[0] + '/' + os.listdir(val_dir + '/' + list(os.listdir(val_dir))[0])[0]
+img = tf.keras.preprocessing.image.load_img(sample_image_path, target_size=IMG_SIZE)
+input_data = tf.keras.preprocessing.image.img_to_array(img)
+input_data = np.expand_dims(input_data, axis=0) / 255.0
+
+interpreter.set_tensor(input_details[0]['index'], input_data.astype(np.float32))
+interpreter.invoke()
+output = interpreter.get_tensor(output_details[0]['index'])
+
+pred_class = np.argmax(output)
+labels = list(train_data.class_indices.keys())
+print(f"Predicted class: {labels[pred_class]}")
